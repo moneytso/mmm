@@ -1,56 +1,78 @@
 import os
-import requests
 import time
-import hashlib
-import hmac
+from datetime import datetime, timedelta
+import requests
+import jwt
 
-# Replace placeholders with your actual credentials
-STORE_CODE = os.environ.get('HKTVMALL_STORE_CODE', 'your_store_code')
-API_KEY = os.environ.get('HKTVMALL_API_KEY', 'your_api_key')
-PRIVATE_KEY = os.environ.get('HKTVMALL_PRIVATE_KEY', 'your_private_key')
+STORE_CODE = os.environ.get('HKTVMALL_STORE_CODE')
+API_KEY = os.environ.get('HKTVMALL_API_KEY')
+PRIVATE_KEY = os.environ.get('HKTVMALL_PRIVATE_KEY')
 
-# Base URL for HKTVmall API (adjust if different)
-BASE_URL = 'https://corp.hktvmall.com/openapi'
+BASE_URL = "https://merchant-oapi.shoalter.com"
+ORDERS_ENDPOINT = "/oapi/api/order/orders"
+DETAILS_ENDPOINT = "/oapi/api/order/details"
+PAGE_SIZE = 10
 
-# API endpoint to list orders
-ENDPOINT = '/order/list'
 
-# Number of orders to fetch
-LIMIT = 10
-
-def sign_request(api_key: str, private_key: str, timestamp: str, body: str = '') -> str:
-    """Return HMAC SHA256 signature for HKTVmall API."""
-    message = f'{api_key}{timestamp}{body}'.encode('utf-8')
-    signature = hmac.new(private_key.encode('utf-8'), message, hashlib.sha256).hexdigest()
-    return signature
-
-def get_latest_orders():
-    timestamp = str(int(time.time() * 1000))
-    body = ''
-    signature = sign_request(API_KEY, PRIVATE_KEY, timestamp, body)
-
-    headers = {
-        'X-API-KEY': API_KEY,
-        'X-SIGNATURE': signature,
-        'X-TIMESTAMP': timestamp,
-        'Content-Type': 'application/json'
+def create_token(api_key: str, private_key: str) -> str:
+    payload = {
+        "sub": "shoalter",
+        "name": "shoalter",
+        "iat": int(time.time()),
+        "x-api-key": api_key,
     }
+    return jwt.encode(payload, private_key, algorithm="RS256")
 
+
+def request_orders(token: str) -> dict:
+    now = datetime.utcnow()
+    start = now - timedelta(days=30)
     params = {
-        'store_code': STORE_CODE,
-        'limit': LIMIT
+        "orderDateStart": start.strftime("%Y-%m-%d %H:%M:%S"),
+        "orderDateEnd": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "pageSize": PAGE_SIZE,
+        "page": 1,
     }
-
-    response = requests.get(BASE_URL + ENDPOINT, headers=headers, params=params, timeout=10)
+    headers = {
+        "Content-Type": "application/json",
+        "x-auth-token": token,
+        "storeCode": STORE_CODE or "",
+        "platformCode": "HKTV",
+        "businessType": "eCommerce",
+    }
+    response = requests.get(BASE_URL + ORDERS_ENDPOINT, headers=headers, params=params, timeout=10)
     response.raise_for_status()
     return response.json()
 
-if __name__ == '__main__':
-    try:
-        orders = get_latest_orders()
-        print('Latest orders:')
-        print(orders)
-    except requests.HTTPError as e:
-        print(f'HTTP error: {e.response.status_code} - {e.response.text}')
-    except Exception as e:
-        print(f'An error occurred: {e}')
+
+def request_details(token: str, order_numbers: list) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "x-auth-token": token,
+        "storeCode": STORE_CODE or "",
+        "platformCode": "HKTV",
+        "businessType": "eCommerce",
+    }
+    payload = {"subOrderNumbers": order_numbers}
+    response = requests.get(BASE_URL + DETAILS_ENDPOINT, headers=headers, json=payload, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def main():
+    if not all([STORE_CODE, API_KEY, PRIVATE_KEY]):
+        raise EnvironmentError("Please set HKTVMALL_STORE_CODE, HKTVMALL_API_KEY and HKTVMALL_PRIVATE_KEY")
+
+    token = create_token(API_KEY, PRIVATE_KEY)
+    orders_resp = request_orders(token)
+    order_numbers = orders_resp.get("data", {}).get("subOrderNumbers", [])
+    if not order_numbers:
+        print("No orders found")
+        return
+
+    details_resp = request_details(token, order_numbers)
+    print(details_resp)
+
+
+if __name__ == "__main__":
+    main()
